@@ -33,7 +33,7 @@ pub enum DataKey {
 
 /// A price entry with value and timestamp.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PriceData {
     /// Price scaled to 7 decimal places (e.g. 1_0000000 = 1.0)
     pub price: i128,
@@ -44,7 +44,7 @@ pub struct PriceData {
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OracleError {
     AlreadyInitialized = 1,
     NotInitialized = 2,
@@ -259,10 +259,10 @@ mod tests {
         let base = Symbol::new(&env, "XLM");
         let quote = Symbol::new(&env, "USDC");
 
-        client.submit_price(&base, &quote, &1_100_0000); // 1.11 USDC per XLM
+        client.submit_price(&base, &quote, &11_000_000); // 1.11 USDC per XLM
         let data = client.get_price(&base, &quote).unwrap();
 
-        assert_eq!(data.price, 1_100_0000);
+        assert_eq!(data.price, 11_000_000);
         assert_eq!(data.updated_at, 1000);
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let base = Symbol::new(&env, "XLM");
         let quote = Symbol::new(&env, "USDC");
 
-        client.submit_price(&base, &quote, &1_000_0000);
+        client.submit_price(&base, &quote, &10_000_000);
 
         // Advance past staleness threshold
         env.ledger().with_mut(|l| l.timestamp = 7200);
@@ -294,11 +294,11 @@ mod tests {
         let base = Symbol::new(&env, "XLM");
         let quote = Symbol::new(&env, "USDC");
 
-        client.submit_price(&base, &quote, &5_000_0000);
+        client.submit_price(&base, &quote, &50_000_000);
         env.ledger().with_mut(|l| l.timestamp = 99999);
 
         let data = client.get_price_unsafe(&base, &quote).unwrap();
-        assert_eq!(data.price, 5_000_0000);
+        assert_eq!(data.price, 50_000_000);
     }
 
     #[test]

@@ -52,7 +52,7 @@ pub struct Proposal {
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MultisigError {
     AlreadyInitialized = 1,
     NotInitialized = 2,

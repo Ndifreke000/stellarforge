@@ -57,7 +57,7 @@ pub struct VestingStatus {
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum VestingError {
     AlreadyInitialized = 1,
     NotInitialized = 2,

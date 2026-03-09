@@ -54,7 +54,7 @@ pub struct StreamStatus {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum StreamError {
     StreamNotFound = 1,
     Unauthorized = 2,
@@ -298,7 +298,7 @@ mod tests {
 
         let result = client.try_create_stream(&sender, &token, &recipient, &100, &1000);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+        assert_eq!(result.unwrap().unwrap(), 0u64);
     }
 
     #[test]

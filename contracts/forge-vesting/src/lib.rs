@@ -56,6 +56,27 @@ pub struct VestingStatus {
     pub fully_vested: bool,
 }
 
+/// Vesting schedule configuration (excludes admin and cancellation state).
+///
+/// Returned by [`get_vesting_schedule`](crate::ForgeVesting::get_vesting_schedule)
+/// to expose the original vesting parameters without sensitive or mutable fields.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VestingSchedule {
+    /// Token contract address
+    pub token: Address,
+    /// Beneficiary who receives vested tokens
+    pub beneficiary: Address,
+    /// Total tokens to vest
+    pub total_amount: i128,
+    /// Seconds before any tokens unlock
+    pub cliff_seconds: u64,
+    /// Total vesting duration in seconds
+    pub duration_seconds: u64,
+    /// Timestamp when vesting starts
+    pub start_time: u64,
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -389,6 +410,42 @@ impl ForgeVesting {
             .ok_or(VestingError::NotInitialized)
     }
 
+    /// Return the vesting schedule parameters.
+    ///
+    /// Exposes the original vesting configuration including token, beneficiary,
+    /// total amount, cliff, duration, and start time. Unlike [`get_config`],
+    /// this excludes admin and cancellation state for a cleaner public interface.
+    /// Read-only; does not modify state.
+    ///
+    /// # Returns
+    /// `Ok(`[`VestingSchedule`]`)` containing the vesting schedule parameters.
+    ///
+    /// # Errors
+    /// - [`VestingError::NotInitialized`] — `initialize` has not been called.
+    ///
+    /// # Example
+    /// ```text
+    /// let schedule = client.get_vesting_schedule();
+    /// println!("Total: {}, Cliff: {}s, Duration: {}s", 
+    ///     schedule.total_amount, schedule.cliff_seconds, schedule.duration_seconds);
+    /// ```
+    pub fn get_vesting_schedule(env: Env) -> Result<VestingSchedule, VestingError> {
+        let config: VestingConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(VestingError::NotInitialized)?;
+
+        Ok(VestingSchedule {
+            token: config.token,
+            beneficiary: config.beneficiary,
+            total_amount: config.total_amount,
+            cliff_seconds: config.cliff_seconds,
+            duration_seconds: config.duration_seconds,
+            start_time: config.start_time,
+        })
+    }
+
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn compute_vested(config: &VestingConfig, now: u64) -> i128 {
@@ -489,6 +546,46 @@ mod tests {
         assert!(!status.cliff_reached);
         assert_eq!(status.claimable, 0);
         assert_eq!(status.claimed, 0);
+    }
+
+    #[test]
+    fn test_get_vesting_schedule_returns_init_params() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &2_500_000, &200, &5000);
+
+        let schedule = client.get_vesting_schedule();
+        assert_eq!(schedule.token, token);
+        assert_eq!(schedule.beneficiary, beneficiary);
+        assert_eq!(schedule.total_amount, 2_500_000);
+        assert_eq!(schedule.cliff_seconds, 200);
+        assert_eq!(schedule.duration_seconds, 5000);
+        assert_eq!(schedule.start_time, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn test_get_vesting_schedule_matches_init_params() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+
+        let total = 10_000_000_i128;
+        let cliff = 86400_u64; // 1 day
+        let duration = 31536000_u64; // 1 year
+
+        client.initialize(&token, &beneficiary, &admin, &total, &cliff, &duration);
+
+        let schedule = client.get_vesting_schedule();
+        assert_eq!(schedule.total_amount, total);
+        assert_eq!(schedule.cliff_seconds, cliff);
+        assert_eq!(schedule.duration_seconds, duration);
+    }
+
+    #[test]
+    fn test_get_vesting_schedule_fails_when_not_initialized() {
+        let (env, contract_id, _, _, _) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        let result = client.try_get_vesting_schedule();
+        assert_eq!(result, Err(Ok(VestingError::NotInitialized)));
     }
 
     #[test]
@@ -599,6 +696,7 @@ mod tests {
         let new_admin = Address::generate(&env);
         let result = client.try_transfer_admin(&new_admin);
         assert!(result.is_ok());
+        let config = client.try_get_config().unwrap().unwrap();
         let config = client.get_config();
         assert_eq!(config.admin, new_admin);
     }
@@ -638,5 +736,6 @@ mod tests {
         let result = client.try_transfer_admin(&admin);
         assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
     }
+}
 }
 }

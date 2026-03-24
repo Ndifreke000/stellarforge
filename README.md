@@ -14,8 +14,8 @@ Developers evaluating StellarForge can use this table to quickly identify the ri
 | [`forge-governor`](#forge-governor) | Governance | No (Auth-based) | None | Yes (Voting/Execution delay) |
 | [`forge-multisig`](#forge-multisig) | Multisig Treasury | Yes (Owners) | None | Yes (Post-approval delay) |
 | [`forge-oracle`](#forge-oracle) | Price Feed | Yes (Admin) | `price_updated` | No |
-| [`forge-stream`](#forge-stream) | Real-time Payments | No (Stream-specific) | `stream_created`, `withdrawn`, `stream_cancelled` | No |
-| [`forge-vesting`](#forge-vesting) | Token Vesting | Yes (Admin) | `vesting_initialized`, `claimed`, `vesting_cancelled` | Yes (Cliff period) |
+| [`forge-stream`](#forge-stream) | Real-time Payments | No (Stream-specific) | `stream_created`, `withdrawn`, `stream_cancelled`, `stream_paused`, `stream_resumed` | No |
+| [`forge-vesting`](#forge-vesting) | Token Vesting | Yes (Admin) | `vesting_initialized`, `claimed`, `vesting_cancelled`, `admin_transferred` | Yes (Cliff period) |
 
 ---
 
@@ -53,6 +53,49 @@ Admin-controlled price feeds with staleness protection for DeFi protocols.
 
 * **Key Function:** `submit_price(base, quote, price)`
 * **Security:** `get_price(base, quote)` reverts if data is older than the staleness threshold.
+
+---
+
+## 📡 Event Reference
+
+The tables below are verified against the current contract code in `contracts/*/src/lib.rs`.
+
+### forge-vesting
+
+| Event Name | Trigger | Fields |
+| :--- | :--- | :--- |
+| `vesting_initialized` | Emitted by `initialize(...)` after the vesting config and claimed amount are stored. | `total_amount: i128`, `cliff_seconds: u64`, `duration_seconds: u64` |
+| `claimed` | Emitted by `claim()` after the beneficiary's claimed amount is updated and vested tokens are transferred. | `beneficiary: Address`, `claimable: i128` |
+| `vesting_cancelled` | Emitted by `cancel()` after the vesting is marked cancelled and any unvested tokens are returned to the admin. | `admin: Address`, `returnable: i128` |
+| `admin_transferred` | Emitted by `transfer_admin(new_admin)` after admin rights move to the new admin address. | `old_admin: Address`, `new_admin: Address` |
+
+### forge-stream
+
+| Event Name | Trigger | Fields |
+| :--- | :--- | :--- |
+| `stream_created` | Emitted by `create_stream(...)` after the stream is stored and the active stream count is incremented. | `stream_id: u64`, `recipient: Address`, `rate_per_second: i128`, `duration_seconds: u64` |
+| `withdrawn` | Emitted by `withdraw(stream_id)` after the withdrawn amount is updated and accrued tokens are transferred to the recipient. | `stream_id: u64`, `recipient: Address`, `withdrawable: i128` |
+| `stream_cancelled` | Emitted by `cancel_stream(stream_id)` after the stream is marked cancelled and funds are paid out/refunded. | `stream_id: u64`, `withdrawable: i128`, `returnable: i128` |
+| `stream_paused` | Emitted by `pause_stream(stream_id)` after the stream is marked paused. | `stream_id: u64` |
+| `stream_resumed` | Emitted by `resume_stream(stream_id)` after paused time is accounted for and streaming resumes. | `stream_id: u64` |
+
+### forge-multisig
+
+| Event Name | Trigger | Fields |
+| :--- | :--- | :--- |
+| None | This contract does not currently emit any events. | None |
+
+### forge-governor
+
+| Event Name | Trigger | Fields |
+| :--- | :--- | :--- |
+| None | This contract does not currently emit any events. | None |
+
+### forge-oracle
+
+| Event Name | Trigger | Fields |
+| :--- | :--- | :--- |
+| `price_updated` | Emitted by `submit_price(base, quote, price)` after the submitted price and update timestamp are written to storage. | `base: Symbol`, `quote: Symbol`, `price: i128`, `updated_at: u64` |
 
 ---
 

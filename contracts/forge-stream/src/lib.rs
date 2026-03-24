@@ -601,6 +601,10 @@ mod tests {
         token::{Client as TokenClient, StellarAssetClient},
     };
 
+    fn setup_token(env: &Env, sender: &Address, total: i128) -> Address {
+        let token_admin = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        StellarAssetClient::new(env, &token_id).mint(sender, &total);
     fn make_token(env: &Env, _contract_id: &Address, sender: &Address, total: i128) -> Address {
         let token_admin = Address::generate(env);
         let token_id = env
@@ -765,6 +769,9 @@ mod tests {
 
     // ── Rounding / extreme-rate tests ─────────────────────────────────────────
 
+    /// Rate of 1 token/sec: streamed amount must equal elapsed seconds exactly.
+    #[test]
+    fn test_low_rate_one_token_per_second() {
     #[test]
     fn test_withdraw_success() {
         let env = Env::default();
@@ -778,6 +785,7 @@ mod tests {
         let duration = 1_000u64;
         let rate = 1i128;
         let total = rate * duration as i128; // 1_000
+        let token = setup_token(&env, &sender, total);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
 
@@ -811,6 +819,7 @@ mod tests {
         // Largest rate that won't overflow i128 when multiplied by duration
         let rate = i128::MAX / duration as i128;
         let total = rate * duration as i128;
+        let token = setup_token(&env, &sender, total);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
 
@@ -843,6 +852,7 @@ mod tests {
         let rate = 7i128; // intentionally odd to surface any rounding
         let duration = 100u64;
         let total = rate * duration as i128; // 700
+        let token = setup_token(&env, &sender, total);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
 
@@ -873,6 +883,7 @@ mod tests {
         let rate = 3i128;
         let duration = 1_000u64;
         let total = rate * duration as i128;
+        let token = setup_token(&env, &sender, total);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
 
@@ -901,6 +912,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -917,6 +929,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -933,6 +946,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -1050,6 +1064,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -1071,6 +1086,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -1099,6 +1115,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -1126,6 +1143,7 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
@@ -1143,11 +1161,56 @@ mod tests {
         let client = ForgeStreamClient::new(&env, &contract_id);
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let token = setup_token(&env, &sender, 100 * 1000);
         let token = make_token(&env, &contract_id, &sender, 1_000_000);
 
         let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
 
         let result = client.try_resume_stream(&stream_id);
         assert_eq!(result, Err(Ok(StreamError::InvalidConfig)));
+    }
+
+    #[test]
+    fn test_full_stream_withdrawal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeStream);
+        let client = ForgeStreamClient::new(&env, &contract_id);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let sac = StellarAssetClient::new(&env, &token_id);
+        let token = TokenClient::new(&env, &token_id);
+
+        let rate = 100i128;
+        let duration = 1_000u64;
+        let total = rate * duration as i128; // 100_000
+
+        sac.mint(&sender, &total);
+        let stream_id = client.create_stream(&sender, &token_id, &recipient, &rate, &duration);
+
+        // Advance past the full stream duration
+        env.ledger().with_mut(|l| l.timestamp += duration + 1);
+
+        // withdrawable should equal the total stream amount
+        let status = client.get_stream_status(&stream_id);
+        assert!(status.is_finished);
+        assert!(!status.is_active);
+        assert_eq!(status.withdrawable, total);
+
+        // withdraw() transfers the full amount to the recipient
+        let withdrawn = client.withdraw(&stream_id);
+        assert_eq!(withdrawn, total);
+        assert_eq!(token.balance(&recipient), total);
+
+        // stream is marked inactive (withdrawn == total, nothing left)
+        let status_after = client.get_stream_status(&stream_id);
+        assert_eq!(status_after.withdrawn, total);
+        assert_eq!(status_after.withdrawable, 0);
+        assert!(!status_after.is_active);
     }
 }

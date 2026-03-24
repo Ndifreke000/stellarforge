@@ -604,6 +604,33 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_admin_by_non_admin_fails() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeVesting);
+        let token = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        let non_admin = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "transfer_admin",
+                args: (&non_admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_transfer_admin(&non_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_transfer_admin_to_same_admin_fails() {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
@@ -611,4 +638,5 @@ mod tests {
         let result = client.try_transfer_admin(&admin);
         assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
     }
+}
 }

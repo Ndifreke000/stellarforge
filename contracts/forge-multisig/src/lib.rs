@@ -496,7 +496,7 @@ mod tests {
         vec, Env,
     };
 
-    fn setup_2of3(env: &Env) -> (MultisigContractClient, Address, Address, Address) {
+    fn setup_2of3<'a>(env: &'a Env) -> (MultisigContractClient<'a>, Address, Address, Address) {
         let contract_id = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(env, &contract_id);
         let o1 = Address::generate(env);
@@ -521,6 +521,8 @@ mod tests {
     fn test_initialize_with_duplicate_owners() {
         let env = Env::default();
         env.mock_all_auths();
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
         let mid = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(&env, &mid);
         let o1 = Address::generate(&env);

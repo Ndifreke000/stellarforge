@@ -281,7 +281,7 @@ mod tests {
         Env, Symbol, TryFromVal,
     };
 
-    fn setup(env: &Env) -> (Address, ForgeOracleClient) {
+    fn setup<'a>(env: &'a Env) -> (Address, ForgeOracleClient<'a>) {
         let contract_id = env.register_contract(None, ForgeOracle);
         let client = ForgeOracleClient::new(env, &contract_id);
         let admin = Address::generate(env);
@@ -507,12 +507,14 @@ mod tests {
         client.submit_price(&base, &quote, &price);
 
         // At exact boundary
+        env.ledger().with_mut(|l| l.timestamp = submit_time + threshold);
         env.ledger()
             .with_mut(|l| l.timestamp = submit_time + threshold);
         let data = client.get_price_unsafe(&base, &quote);
         assert_eq!(data.price, price);
 
         // One second past boundary
+        env.ledger().with_mut(|l| l.timestamp = submit_time + threshold + 1);
         env.ledger()
             .with_mut(|l| l.timestamp = submit_time + threshold + 1);
         let data = client.get_price_unsafe(&base, &quote);

@@ -466,7 +466,7 @@ mod tests {
         Env, String,
     };
 
-    fn setup(env: &Env) -> GovernorContractClient {
+    fn setup<'a>(env: &'a Env) -> GovernorContractClient<'a> {
         let contract_id = env.register_contract(None, GovernorContract);
         let client = GovernorContractClient::new(env, &contract_id);
         let token = Address::generate(env);
@@ -651,6 +651,7 @@ mod tests {
         let client = setup(&env);
 
         let proposer = Address::generate(&env);
+        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
         let pid = client.propose(
             &proposer,
             &String::from_str(&env, "P"),

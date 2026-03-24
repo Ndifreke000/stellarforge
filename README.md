@@ -263,6 +263,15 @@ Each contract in StellarForge is versioned independently. A breaking change in `
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style requirements, and the pull request process.
 
+## 🆘 Getting Help
+
+Stuck on something? Here's where to go:
+
+- **Bug reports** — Open an issue on [GitHub Issues](https://github.com/Austinaminu2/stellarforge/issues). Please include a minimal reproduction and the contract name.
+- **Questions & ideas** — Start a thread in [GitHub Discussions](https://github.com/Austinaminu2/stellarforge/discussions). We have dedicated spaces for Q&A, ideas, show-and-tell, and general chat.
+
+**Response time:** This is a community-maintained project. Maintainers aim to respond to issues and discussions within a few business days, but there are no guaranteed SLAs. For faster help, check if a similar issue or discussion already exists before opening a new one.
+
 ## Community & Discussions
 
 Have a question, idea, or something to share? Join the conversation in [GitHub Discussions](https://github.com/soma-enyi/stellarforge/discussions) — we have dedicated spaces for Q&A, ideas, show-and-tell, and general chat.

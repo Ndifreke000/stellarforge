@@ -766,6 +766,51 @@ mod tests {
         assert!(matches!(result, Err(Ok(GovernorError::VotingClosed))));
     }
 
+    /// Voting on a finalized (Passed) proposal must revert with `VotingClosed`.
+    #[test]
+    fn test_vote_after_finalized_passed_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
+        let late_voter = Address::generate(&env);
+
+        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        client.vote(&voter, &pid, &true, &200); // meets quorum
+
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        let state = client.finalize(&pid);
+        assert_eq!(state, ProposalState::Passed);
+
+        let result = client.try_vote(&late_voter, &pid, &true, &100);
+        assert!(matches!(result, Err(Ok(GovernorError::VotingClosed))));
+    }
+
+    /// Voting on a finalized (Failed) proposal must revert with `VotingClosed`.
+    #[test]
+    fn test_vote_after_finalized_failed_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let late_voter = Address::generate(&env);
+
+        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        // No votes — quorum not met → Failed
+
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        let state = client.finalize(&pid);
+        assert_eq!(state, ProposalState::Failed);
+
+        let result = client.try_vote(&late_voter, &pid, &true, &100);
+        assert!(matches!(result, Err(Ok(GovernorError::VotingClosed))));
+    }
+
     #[test]
     fn test_execute_before_timelock_fails() {
         let env = Env::default();

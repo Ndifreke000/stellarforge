@@ -90,6 +90,7 @@ pub enum VestingError {
     Cancelled = 6,
     InvalidConfig = 7,
     SameAdmin = 8,
+    SameBeneficiary = 9,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -337,6 +338,52 @@ impl ForgeVesting {
         Ok(())
     }
 
+    /// Transfer beneficiary rights to a new address.
+    ///
+    /// Allows the current beneficiary to transfer their vesting rights to a new address.
+    /// This is useful for wallet migration scenarios or when transferring vesting rights
+    /// to another party. Requires authorization from the current beneficiary.
+    ///
+    /// # Parameters
+    /// - `new_beneficiary` — Address that will become the new beneficiary.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`VestingError::NotInitialized`] — `initialize` has not been called.
+    /// - [`VestingError::SameBeneficiary`] — `new_beneficiary` is the same as the current beneficiary.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Transfer beneficiary rights to a new wallet:
+    /// client.change_beneficiary(&new_beneficiary_address);
+    /// ```rust,ignore
+    pub fn change_beneficiary(env: Env, new_beneficiary: Address) -> Result<(), VestingError> {
+        let mut config: VestingConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(VestingError::NotInitialized)?;
+
+        config.beneficiary.require_auth();
+
+        if config.beneficiary == new_beneficiary {
+            return Err(VestingError::SameBeneficiary);
+        }
+
+        let old_beneficiary = config.beneficiary;
+        config.beneficiary = new_beneficiary.clone();
+        env.storage().instance().set(&DataKey::Config, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "beneficiary_changed"),),
+            (&old_beneficiary, &new_beneficiary),
+        );
+
+        Ok(())
+    }
+
     /// Return a snapshot of the current vesting status.
     ///
     /// Reads the ledger timestamp and computes vested, claimed, and claimable
@@ -426,7 +473,7 @@ impl ForgeVesting {
     /// # Example
     /// ```text
     /// let schedule = client.get_vesting_schedule();
-    /// println!("Total: {}, Cliff: {}s, Duration: {}s", 
+    /// println!("Total: {}, Cliff: {}s, Duration: {}s",
     ///     schedule.total_amount, schedule.cliff_seconds, schedule.duration_seconds);
     /// ```
     pub fn get_vesting_schedule(env: Env) -> Result<VestingSchedule, VestingError> {
@@ -696,7 +743,6 @@ mod tests {
         let new_admin = Address::generate(&env);
         let result = client.try_transfer_admin(&new_admin);
         assert!(result.is_ok());
-        let config = client.try_get_config().unwrap().unwrap();
         let config = client.get_config();
         assert_eq!(config.admin, new_admin);
     }
@@ -737,21 +783,91 @@ mod tests {
         assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
     }
 
-    fn setup_with_token() -> (Env, Address, Address, Address, Address) {
+    #[test]
+    fn test_change_beneficiary_success() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        let new_beneficiary = Address::generate(&env);
+        let result = client.try_change_beneficiary(&new_beneficiary);
+        assert!(result.is_ok());
+
+        let config = client.get_config();
+        assert_eq!(config.beneficiary, new_beneficiary);
+    }
+
+    #[test]
+    fn test_change_beneficiary_by_non_beneficiary_fails() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, ForgeVesting);
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token = Address::generate(&env);
         let beneficiary = Address::generate(&env);
         let admin = Address::generate(&env);
-        {
-            soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &1_000_000);
-        }
-        (env, contract_id, token_id, beneficiary, admin)
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        let non_beneficiary = Address::generate(&env);
+        let new_beneficiary = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &non_beneficiary,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "change_beneficiary",
+                args: (&new_beneficiary,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_change_beneficiary(&new_beneficiary);
+        assert!(result.is_err());
     }
 
-}
-}
-}
+    #[test]
+    fn test_change_beneficiary_to_same_beneficiary_fails() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+        let result = client.try_change_beneficiary(&beneficiary);
+        assert_eq!(result, Err(Ok(VestingError::SameBeneficiary)));
+    }
+
+    #[test]
+    fn test_change_beneficiary_preserves_claimed_amount() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        // Advance past cliff and claim some tokens
+        env.ledger().with_mut(|l| l.timestamp += 500);
+        let claimed_amount = client.claim();
+
+        // Change beneficiary
+        let new_beneficiary = Address::generate(&env);
+        client.change_beneficiary(&new_beneficiary);
+
+        // Verify claimed amount is preserved
+        let status = client.get_status();
+        assert_eq!(status.claimed, claimed_amount);
+
+        // Verify new beneficiary can claim remaining tokens
+        env.ledger().with_mut(|l| l.timestamp += 500);
+        let tc = soroban_sdk::token::Client::new(&env, &token_id);
+        let new_beneficiary_balance_before = tc.balance(&new_beneficiary);
+        client.claim();
+        let new_beneficiary_balance_after = tc.balance(&new_beneficiary);
+        assert!(new_beneficiary_balance_after > new_beneficiary_balance_before);
+    }
+
+    #[test]
+    fn test_change_beneficiary_not_initialized_fails() {
+        let (env, contract_id, _, _, _) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        let new_beneficiary = Address::generate(&env);
+        let result = client.try_change_beneficiary(&new_beneficiary);
+        assert_eq!(result, Err(Ok(VestingError::NotInitialized)));
+    }
 }

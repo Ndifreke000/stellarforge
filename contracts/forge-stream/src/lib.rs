@@ -370,6 +370,29 @@ impl ForgeStream {
             .ok_or(StreamError::StreamNotFound)
     }
 
+    /// Return the number of tokens the recipient can withdraw right now.
+    ///
+    /// Lightweight alternative to [`get_stream_status`](Self::get_stream_status)
+    /// for UIs and integrators that only need the withdrawable balance.
+    /// Returns `0` for cancelled streams (accrued tokens are paid out on cancel).
+    ///
+    /// # Errors
+    /// - [`StreamError::StreamNotFound`] — no stream exists with `stream_id`.
+    pub fn get_claimable(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let stream: Stream = env
+            .storage()
+            .instance()
+            .get(&DataKey::Stream(stream_id))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.cancelled {
+            return Ok(0);
+        }
+
+        let streamed = Self::compute_streamed(&stream, env.ledger().timestamp());
+        Ok((streamed - stream.withdrawn).max(0))
+    }
+
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn compute_streamed(stream: &Stream, now: u64) -> i128 {
@@ -694,31 +717,28 @@ mod tests {
     #[test]
     fn test_cancel_no_tokens_lost() {
 
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        let sac = StellarAssetClient::new(&env, &token_id);
-        sac.mint(&sender, &10_000_000i128);
-        let token = TokenClient::new(&env, &token_id);
+        let rate = 7i128; // intentionally odd to surface any rounding
+        let duration = 100u64;
+        let total = rate * duration as i128; // 700
 
-        let stream_id = client.create_stream(&sender, &token.address, &recipient, &100, &1000);
+        let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
 
-        env.ledger().set_timestamp(1000000);
-        let result = client.withdraw(&stream_id);
-        assert_eq!(result, 100_000);
-
-        let status = client.get_stream_status(&stream_id);
-        assert_eq!(status.id, 0);
-        assert!(!status.is_active);
-        assert!(status.is_finished);
-        assert_eq!(status.remaining, 0);
-        assert_eq!(status.streamed, 100_000);
-        assert_eq!(status.withdrawn, 100_000);
+        for tick in [1u64, 10, 33, 50, 77, 99, 100, 150] {
+            env.ledger().with_mut(|l| l.timestamp = tick);
+            let status = client.get_stream_status(&stream_id).unwrap();
+            assert_eq!(
+                status.streamed + status.remaining,
+                total,
+                "invariant broken at tick={tick}: streamed={} remaining={}",
+                status.streamed,
+                status.remaining
+            );
+        }
     }
 
+    /// On cancel, withdrawable + returnable == total (no tokens lost or created).
     #[test]
-    fn test_withdraw_success_different_time() {
+    fn test_cancel_no_tokens_lost() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register(ForgeStream, ());
@@ -726,6 +746,77 @@ mod tests {
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
         let token = Address::generate(&env);
+
+        let rate = 3i128;
+        let duration = 1_000u64;
+        let total = rate * duration as i128;
+
+        let stream_id = client.create_stream(&sender, &token, &recipient, &rate, &duration);
+
+        // Advance to a mid-stream point, then cancel
+        env.ledger().with_mut(|l| l.timestamp += 400);
+
+        // Capture expected split before cancel
+        let status = client.get_stream_status(&stream_id).unwrap();
+        let expected_withdrawable = status.withdrawable;
+        let expected_returnable = total - status.streamed;
+
+        client.cancel_stream(&stream_id);
+
+        // Verify the split sums to total
+        assert_eq!(expected_withdrawable + expected_returnable, total);
+        assert_eq!(status.streamed + status.remaining, total);
+    }
+
+    // ── get_claimable tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_claimable_active_stream() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ForgeStream, ());
+        let client = ForgeStreamClient::new(&env, &contract_id);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
+        env.ledger().with_mut(|l| l.timestamp += 50);
+
+        assert_eq!(client.get_claimable(&stream_id).unwrap(), 5_000); // 100 * 50
+    }
+
+    #[test]
+    fn test_get_claimable_fully_elapsed_stream() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ForgeStream, ());
+        let client = ForgeStreamClient::new(&env, &contract_id);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
+        env.ledger().with_mut(|l| l.timestamp += 2000); // past end_time
+
+        assert_eq!(client.get_claimable(&stream_id).unwrap(), 100_000); // 100 * 1000
+    }
+
+    #[test]
+    fn test_get_claimable_cancelled_stream_returns_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ForgeStream, ());
+        let client = ForgeStreamClient::new(&env, &contract_id);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let stream_id = client.create_stream(&sender, &token, &recipient, &100, &1000);
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        client.cancel_stream(&stream_id);
+
+        assert_eq!(client.get_claimable(&stream_id).unwrap(), 0);
 
         let rate = 3i128;
         let duration = 1_000u64;

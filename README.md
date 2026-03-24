@@ -39,6 +39,7 @@ An N-of-M treasury requiring multiple owner approvals before funds move. Essenti
 
 * **Key Function:** `propose(proposer, to, token, amount)`
 * **Action:** `execute(executor, proposal_id)` transfers funds only after the configured timelock.
+* **Duplicate Owners:** If duplicate addresses are provided during initialization, they are automatically deduplicated to ensure each owner is unique and counts only once toward the threshold.
 
 ### forge-governor
 Token-weighted on-chain governance with configurable quorum and voting periods.

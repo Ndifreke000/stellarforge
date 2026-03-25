@@ -933,6 +933,53 @@ mod tests {
         assert_eq!(result, Err(Ok(VestingError::NotInitialized)));
     }
 
+    /// Verifies the fully vested state end-to-end:
+    /// - `get_status().fully_vested` is true after the full duration elapses.
+    /// - `claimable` equals `total_amount - already_claimed` (handles partial prior claims).
+    /// - `claim()` transfers exactly the remaining balance to the beneficiary.
+    /// - A subsequent `claim()` fails with `NothingToClaim` — no tokens remain.
+    #[test]
+    fn test_fully_vested_claim_remaining_tokens() {
+        const TOTAL: i128 = 10_000;
+        const CLIFF: u64 = 0;
+        const DURATION: u64 = 31_536_000; // 365 days
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeVesting);
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &TOTAL);
+
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        client.initialize(&token_id, &beneficiary, &admin, &TOTAL, &CLIFF, &DURATION);
+
+        // Partial claim at 50% through vesting
+        env.ledger().with_mut(|l| l.timestamp = DURATION / 2);
+        let partial = client.claim();
+        assert!(partial > 0);
+
+        // Advance past full duration
+        env.ledger().with_mut(|l| l.timestamp = DURATION + 1);
+
+        // Status checks
+        let status = client.get_status();
+        assert!(status.fully_vested);
+        assert_eq!(status.claimable, TOTAL - partial);
+
+        // Claim remaining and verify token balance
+        let tc = soroban_sdk::token::Client::new(&env, &token_id);
+        let before = tc.balance(&beneficiary);
+        let remaining = client.claim();
+        assert_eq!(remaining, TOTAL - partial);
+        assert_eq!(tc.balance(&beneficiary), before + remaining);
+
+        // Second claim must fail — nothing left
+        assert_eq!(client.try_claim(), Err(Ok(VestingError::NothingToClaim)));
     // ── Cliff == Duration (instant-vest) edge case ────────────────────────────
 
     /// Helper: sets up a vesting schedule where cliff == duration so all tokens

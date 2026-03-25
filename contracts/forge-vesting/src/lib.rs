@@ -932,4 +932,108 @@ mod tests {
         let result = client.try_change_beneficiary(&new_beneficiary);
         assert_eq!(result, Err(Ok(VestingError::NotInitialized)));
     }
+
+    #[test]
+    fn test_invariant_claimed_never_exceeds_vested() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+
+        let total_amount = 1_000_000_i128;
+        let cliff_seconds = 100_u64;
+        let duration_seconds = 1000_u64;
+
+        client.initialize(&token_id, &beneficiary, &admin, &total_amount, &cliff_seconds, &duration_seconds);
+
+        // Track cumulative claimed amount
+        let mut cumulative_claimed = 0_i128;
+
+        // Test points: before cliff, at cliff, mid-vesting, fully vested
+        let test_timestamps = [
+            50_u64,   // Before cliff
+            100,      // At cliff
+            300,      // 30% through vesting
+            550,      // 55% through vesting
+            800,      // 80% through vesting
+            1000,     // Fully vested
+            1500,     // Past vesting end
+        ];
+
+        for &timestamp in &test_timestamps {
+            env.ledger().with_mut(|l| l.timestamp = timestamp);
+
+            let status = client.get_status();
+
+            // Core invariant 1: claimed <= vested
+            assert!(
+                status.claimed <= status.vested,
+                "Invariant violated at t={}: claimed ({}) > vested ({})",
+                timestamp, status.claimed, status.vested
+            );
+
+            // Core invariant 2: vested <= total_amount
+            assert!(
+                status.vested <= status.total_amount,
+                "Invariant violated at t={}: vested ({}) > total_amount ({})",
+                timestamp, status.vested, status.total_amount
+            );
+
+            // Core invariant 3: claimed <= total_amount
+            assert!(
+                status.claimed <= status.total_amount,
+                "Invariant violated at t={}: claimed ({}) > total_amount ({})",
+                timestamp, status.claimed, status.total_amount
+            );
+
+            // Attempt to claim if past cliff
+            if timestamp >= cliff_seconds && status.claimable > 0 {
+                let claimed_now = client.claim();
+                cumulative_claimed += claimed_now;
+
+                // Verify the claim amount is positive and reasonable
+                assert!(claimed_now > 0, "Claimed amount should be positive at t={}", timestamp);
+                assert!(
+                    claimed_now <= status.claimable,
+                    "Claimed more than claimable at t={}",
+                    timestamp
+                );
+
+                // Verify status after claim
+                let status_after = client.get_status();
+
+                // Invariants must still hold after claim
+                assert!(
+                    status_after.claimed <= status_after.vested,
+                    "Invariant violated after claim at t={}: claimed ({}) > vested ({})",
+                    timestamp, status_after.claimed, status_after.vested
+                );
+
+                assert!(
+                    status_after.vested <= status_after.total_amount,
+                    "Invariant violated after claim at t={}: vested ({}) > total_amount ({})",
+                    timestamp, status_after.vested, status_after.total_amount
+                );
+
+                // Verify cumulative claimed matches status
+                assert_eq!(
+                    cumulative_claimed, status_after.claimed,
+                    "Cumulative claimed mismatch at t={}: tracked={}, status={}",
+                    timestamp, cumulative_claimed, status_after.claimed
+                );
+            }
+        }
+
+        // Final verification: all tokens should be claimed by the end
+        let final_status = client.get_status();
+        assert_eq!(
+            final_status.claimed, total_amount,
+            "Not all tokens were claimed: claimed={}, total={}",
+            final_status.claimed, total_amount
+        );
+        assert_eq!(
+            cumulative_claimed, total_amount,
+            "Cumulative tracking mismatch: cumulative={}, total={}",
+            cumulative_claimed, total_amount
+        );
+    }
+
 }

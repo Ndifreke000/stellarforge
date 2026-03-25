@@ -43,6 +43,10 @@ pub struct VestingConfig {
     pub duration_seconds: u64,
     /// Whether vesting has been cancelled
     pub cancelled: bool,
+    /// Whether vesting is currently paused
+    pub paused: bool,
+    /// Ledger timestamp when vesting was paused (0 if not paused)
+    pub paused_at: u64,
 }
 
 #[contracttype]
@@ -54,6 +58,7 @@ pub struct VestingStatus {
     pub claimable: i128,
     pub cliff_reached: bool,
     pub fully_vested: bool,
+    pub paused: bool,
 }
 
 /// Vesting schedule configuration (excludes admin and cancellation state).
@@ -90,8 +95,10 @@ pub enum VestingError {
     Cancelled = 6,
     InvalidConfig = 7,
     SameAdmin = 8,
-    SameBeneficiary = 9,
-    BeneficiaryAsAdmin = 10,
+    SameBeneficiary = 11,
+    BeneficiaryAsAdmin = 12,
+    Paused = 9,
+    NotPaused = 10,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -160,6 +167,8 @@ impl ForgeVesting {
             cliff_seconds,
             duration_seconds,
             cancelled: false,
+            paused: false,
+            paused_at: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -206,6 +215,10 @@ impl ForgeVesting {
 
         if config.cancelled {
             return Err(VestingError::Cancelled);
+        }
+
+        if config.paused {
+            return Err(VestingError::Paused);
         }
 
         config.beneficiary.require_auth();
@@ -449,6 +462,7 @@ impl ForgeVesting {
             claimable,
             cliff_reached,
             fully_vested,
+            paused: config.paused,
         })
     }
 
@@ -512,6 +526,69 @@ impl ForgeVesting {
         })
     }
 
+    // ── Pause / Unpause ───────────────────────────────────────────────────────
+
+    /// Pause the vesting schedule, freezing token accumulation.
+    ///
+    /// While paused, `claim()` is blocked and `compute_vested` uses `paused_at`
+    /// as the effective current time so the vested amount stays frozen.
+    /// Requires authorization from `admin`.
+    ///
+    /// # Errors
+    /// - [`VestingError::NotInitialized`] — Contract not initialized.
+    /// - [`VestingError::Paused`] — Already paused.
+    pub fn pause(env: Env) -> Result<(), VestingError> {
+        let mut config: VestingConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(VestingError::NotInitialized)?;
+
+        config.admin.require_auth();
+
+        if config.paused {
+            return Err(VestingError::Paused);
+        }
+
+        config.paused = true;
+        config.paused_at = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::Config, &config);
+
+        Ok(())
+    }
+
+    /// Unpause the vesting schedule, shifting the timeline forward by the pause duration.
+    ///
+    /// Calculates `delta = now - paused_at` and adds it to both `start_time` and
+    /// `end_time` (via `duration_seconds` anchor) so the full remaining schedule
+    /// is preserved. Requires authorization from `admin`.
+    ///
+    /// # Errors
+    /// - [`VestingError::NotInitialized`] — Contract not initialized.
+    /// - [`VestingError::NotPaused`] — Not currently paused.
+    pub fn unpause(env: Env) -> Result<(), VestingError> {
+        let mut config: VestingConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(VestingError::NotInitialized)?;
+
+        config.admin.require_auth();
+
+        if !config.paused {
+            return Err(VestingError::NotPaused);
+        }
+
+        let now = env.ledger().timestamp();
+        let delta = now.saturating_sub(config.paused_at);
+        config.start_time = config.start_time.saturating_add(delta);
+        config.paused = false;
+        config.paused_at = 0;
+        env.storage().instance().set(&DataKey::Config, &config);
+
+        Ok(())
+    }
+
     // ── Private ───────────────────────────────────────────────────────────────
 
     /// Get the claimed amount from storage.
@@ -526,7 +603,8 @@ impl ForgeVesting {
         if config.cancelled {
             return 0;
         }
-        let elapsed = now.saturating_sub(config.start_time);
+        let effective_now = if config.paused { config.paused_at } else { now };
+        let elapsed = effective_now.saturating_sub(config.start_time);
         if elapsed < config.cliff_seconds {
             return 0;
         }
@@ -1083,6 +1161,120 @@ mod tests {
             "Cumulative tracking mismatch: cumulative={}, total={}",
             cumulative_claimed, total_amount
         );
+    }
+
+    // ── Pause / Unpause Tests ─────────────────────────────────────────────────
+
+    /// Test 1: Admin pauses at 50% vesting. Verify get_status shows amount frozen
+    /// and claim() fails with Paused.
+    #[test]
+    fn test_pause_freezes_vested_amount_and_blocks_claim() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        // 1000s duration, 0 cliff
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &0, &1000);
+
+        // Advance to 50% vesting
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        client.pause();
+
+        let status = client.get_status();
+        assert!(status.paused);
+        assert_eq!(status.vested, 500_000); // frozen at 50%
+
+        // claim must fail
+        assert_eq!(client.try_claim(), Err(Ok(VestingError::Paused)));
+    }
+
+    /// Test 2: Advance time by 30 days while paused. Verify vested amount has not increased.
+    #[test]
+    fn test_vested_amount_does_not_increase_while_paused() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &0, &1000);
+
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        client.pause();
+        let vested_at_pause = client.get_status().vested;
+
+        // Advance 30 days while paused
+        env.ledger().with_mut(|l| l.timestamp += 30 * 24 * 3600);
+        let vested_after_30_days = client.get_status().vested;
+
+        assert_eq!(vested_at_pause, vested_after_30_days);
+    }
+
+    /// Test 3: Unpause and verify the new end_time (start_time + duration_seconds)
+    /// has shifted forward by the pause duration.
+    #[test]
+    fn test_unpause_shifts_timeline_correctly() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &0, &1000);
+
+        let original_start = client.get_config().start_time;
+
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        client.pause();
+
+        // Pause for 200 seconds
+        env.ledger().with_mut(|l| l.timestamp = 700);
+        client.unpause();
+
+        let config = client.get_config();
+        assert!(!config.paused);
+        assert_eq!(config.paused_at, 0);
+        // start_time shifted by 200s
+        assert_eq!(config.start_time, original_start + 200);
+        // effective end_time = new start_time + duration = original_start + 200 + 1000
+        let expected_end = original_start + 200 + 1000;
+        assert_eq!(config.start_time + config.duration_seconds, expected_end);
+    }
+
+    /// Test 4: Non-admin cannot pause or unpause.
+    #[test]
+    fn test_non_admin_cannot_pause_or_unpause() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeVesting);
+        let token = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &0, &1000);
+
+        let non_admin = Address::generate(&env);
+
+        // Attempt pause as non-admin — must fail (auth error panics, so use try_ with catch)
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "pause",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_pause().is_err());
+
+        // Restore mock_all_auths and pause as real admin
+        env.mock_all_auths();
+        client.pause();
+
+        // Attempt unpause as non-admin
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "unpause",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_unpause().is_err());
     }
 
 }

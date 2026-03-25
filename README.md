@@ -19,6 +19,14 @@ Developers evaluating StellarForge can use this table to quickly identify the ri
 
 ---
 
+## 🏭 Real World Use Cases
+
+- `forge-vesting`: Issue employee token grants with a one-year cliff and multi-year linear vesting so early hires are rewarded for long-term commitment, while investor lockups enforce even longer vesting before secondary-market liquidity.
+- `forge-stream`: Pay contractors in real time for on-demand work with per-second streams that stop automatically at project completion, or implement subscription billing for SaaS users where tokens accrue continuously and can be withdrawn by the service provider.
+- `forge-multisig`: Manage a DAO treasury for community-approved funding requests requiring multi-owner consent, or safeguard team operational funds with 2-of-3 and 3-of-5 approval workflows to prevent single-person spending.
+- `forge-governor`: Coordinate protocol upgrades by routing proposals through a token-weighted voting process and enforcing execution delays, and tune parameters like fees or collateral ratios in a transparent governance flow.
+- `forge-oracle`: Feed DEX price data into AMM pools for accurate swap pricing and slippage control, or provide collateral valuation updates for lending markets so borrowing power adjusts to live market conditions.
+
 ## 📜 Contract Details
 
 ### forge-vesting
@@ -283,6 +291,53 @@ Stuck on something? Here's where to go:
 ## Community & Discussions
 
 Have a question, idea, or something to share? Join the conversation in [GitHub Discussions](https://github.com/soma-enyi/stellarforge/discussions) — we have dedicated spaces for Q&A, ideas, show-and-tell, and general chat.
+
+---
+
+<!-- WASM-SIZES-START -->
+## ⚙️ WASM Binary Sizes
+
+> Sizes are in bytes. Run `./scripts/update-wasm-sizes.sh` to regenerate after rebuilding contracts.
+
+| Contract | WASM Size (bytes) | WASM Size (optimized) |
+| :--- | ---: | ---: |
+| `forge-governor` | — | — |
+| `forge-multisig` | — | — |
+| `forge-oracle` | — | — |
+| `forge-stream` | — | — |
+| `forge-vesting` | — | — |
+
+> Run `./scripts/update-wasm-sizes.sh` after building to populate these values.
+
+### Optimizing with wasm-opt
+
+`wasm-opt` is part of the [Binaryen](https://github.com/WebAssembly/binaryen) toolchain.
+The `-Oz` flag instructs the optimizer to minimize binary size as aggressively as possible,
+trading compilation time for the smallest possible output.
+
+#### Install wasm-opt
+
+```bash
+# macOS (Homebrew)
+brew install binaryen
+
+# npm (cross-platform)
+npm install -g binaryen
+
+# Direct binary download
+# https://github.com/WebAssembly/binaryen/releases
+```
+
+#### Run optimization
+
+```bash
+wasm-opt -Oz \
+  target/wasm32v1-none/release/forge_governor.wasm \
+  -o target/wasm32v1-none/release/forge_governor.wasm
+```
+
+Replace `forge_governor` with the snake_case name of the contract you want to optimize.
+<!-- WASM-SIZES-END -->
 
 ---
 

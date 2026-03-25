@@ -709,6 +709,50 @@ mod tests {
     }
 
     #[test]
+    fn test_finalize_exact_quorum_passes_and_below_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Exact quorum"),
+            &String::from_str(&env, "desc"),
+        );
+
+        // Cast votes that exactly meet quorum (60 + 40 = 100)
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        client.vote(&voter1, &pid, &true, &60);
+        client.vote(&voter2, &pid, &true, &40);
+
+        // Finalize after the voting period and verify it passes.
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        let state = client.finalize(&pid);
+        assert_eq!(state, ProposalState::Passed);
+
+        let proposer2 = Address::generate(&env);
+        let pid2 = client.propose(
+            &proposer2,
+            &String::from_str(&env, "Below quorum"),
+            &String::from_str(&env, "desc"),
+        );
+
+        // Cast votes just below quorum (60 + 39 = 99)
+        let voter3 = Address::generate(&env);
+        let voter4 = Address::generate(&env);
+        client.vote(&voter3, &pid2, &true, &60);
+        client.vote(&voter4, &pid2, &true, &39);
+
+        // Finalize after the voting period and verify it fails.
+        env.ledger().with_mut(|l| l.timestamp = 6000);
+        let state2 = client.finalize(&pid2);
+        assert_eq!(state2, ProposalState::Failed);
+    }
+
+    #[test]
     fn test_finalize_passes_when_quorum_met_and_majority_yes() {
         let env = Env::default();
         env.mock_all_auths();
@@ -829,6 +873,14 @@ mod tests {
 
         let result = client.try_execute(&executor, &pid);
         assert_eq!(result, Err(Ok(GovernorError::TimelockNotElapsed)));
+
+        // Ensure execution succeeds after the timelock delay elapsed
+        env.ledger().with_mut(|l| l.timestamp = 5000 + 86400);
+        let result = client.execute(&executor, &pid);
+        assert_eq!(result, Ok(()));
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.state, ProposalState::Executed);
     }
 
     #[test]

@@ -933,6 +933,92 @@ mod tests {
         assert_eq!(result, Err(Ok(VestingError::NotInitialized)));
     }
 
+    // ── Cliff == Duration (instant-vest) edge case ────────────────────────────
+
+    /// Helper: sets up a vesting schedule where cliff == duration so all tokens
+    /// vest at once at the cliff moment.
+    fn setup_cliff_equals_duration() -> (Env, Address, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeVesting);
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id)
+            .mint(&contract_id, &1_000_000);
+        (env, contract_id, token_id, beneficiary, admin)
+    }
+
+    #[test]
+    fn test_cliff_equals_duration_initialize_succeeds() {
+        // duration_seconds == cliff_seconds must be accepted (cliff <= duration)
+        let (env, contract_id, token_id, beneficiary, admin) = setup_cliff_equals_duration();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        let result =
+            client.try_initialize(&token_id, &beneficiary, &admin, &1_000_000, &500, &500);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cliff_equals_duration_before_cliff_claimable_is_zero() {
+        // Before the cliff, nothing should be claimable
+        let (env, contract_id, token_id, beneficiary, admin) = setup_cliff_equals_duration();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &500, &500);
+
+        // advance to just before the cliff
+        env.ledger().with_mut(|l| l.timestamp += 499);
+
+        let status = client.get_status();
+        assert!(!status.cliff_reached);
+        assert_eq!(status.claimable, 0);
+        assert_eq!(status.vested, 0);
+
+        // claim should fail with CliffNotReached
+        let result = client.try_claim();
+        assert_eq!(result, Err(Ok(VestingError::CliffNotReached)));
+    }
+
+    #[test]
+    fn test_cliff_equals_duration_at_cliff_all_tokens_vested() {
+        // Exactly at the cliff timestamp the full amount should be vested
+        let (env, contract_id, token_id, beneficiary, admin) = setup_cliff_equals_duration();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &500, &500);
+
+        // advance exactly to the cliff / duration boundary
+        env.ledger().with_mut(|l| l.timestamp += 500);
+
+        let status = client.get_status();
+        assert!(status.cliff_reached);
+        assert!(status.fully_vested);
+        assert_eq!(status.vested, 1_000_000);
+        assert_eq!(status.claimable, 1_000_000);
+    }
+
+    #[test]
+    fn test_cliff_equals_duration_claim_transfers_full_amount_in_one_call() {
+        // A single claim() call after the cliff should transfer all tokens at once
+        let (env, contract_id, token_id, beneficiary, admin) = setup_cliff_equals_duration();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &500, &500);
+
+        env.ledger().with_mut(|l| l.timestamp += 500);
+
+        let claimed = client.claim();
+        assert_eq!(claimed, 1_000_000);
+
+        let tc = soroban_sdk::token::Client::new(&env, &token_id);
+        assert_eq!(tc.balance(&beneficiary), 1_000_000);
+
+        // nothing left to claim
+        let result = client.try_claim();
+        assert_eq!(result, Err(Ok(VestingError::NothingToClaim)));
+    }
+
     #[test]
     fn test_invariant_claimed_never_exceeds_vested() {
         let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();

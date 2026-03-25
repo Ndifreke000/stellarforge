@@ -829,6 +829,14 @@ mod tests {
 
         let result = client.try_execute(&executor, &pid);
         assert_eq!(result, Err(Ok(GovernorError::TimelockNotElapsed)));
+
+        // Ensure execution succeeds after the timelock delay elapsed
+        env.ledger().with_mut(|l| l.timestamp = 5000 + 86400);
+        let result = client.execute(&executor, &pid);
+        assert_eq!(result, Ok(()));
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.state, ProposalState::Executed);
     }
 
     #[test]

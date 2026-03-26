@@ -1058,6 +1058,8 @@ mod tests {
 
         // Second claim must fail — nothing left
         assert_eq!(client.try_claim(), Err(Ok(VestingError::NothingToClaim)));
+    }
+
     // ── Cliff == Duration (instant-vest) edge case ────────────────────────────
 
     /// Helper: sets up a vesting schedule where cliff == duration so all tokens
@@ -1359,6 +1361,56 @@ mod tests {
             },
         }]);
         assert!(client.try_unpause().is_err());
+    }
+
+    /// Verifies that multiple sequential claim() calls across four time points
+    /// accumulate correctly: no tokens are double-counted or lost.
+    ///
+    /// Schedule: 1_000_000 tokens, no cliff, 1000s duration.
+    /// Claims at 25%, 50%, 75%, and 100% vested.
+    /// Asserts the sum of all four return values equals total_amount and that
+    /// get_status().claimed equals total_amount after all claims.
+    #[test]
+    fn test_sequential_claims_accumulate_correctly() {
+        const TOTAL: i128 = 1_000_000;
+        const DURATION: u64 = 1000;
+
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        client.initialize(&token_id, &beneficiary, &admin, &TOTAL, &0, &DURATION);
+
+        // 25% vested → expect 250_000 claimable
+        env.ledger().with_mut(|l| l.timestamp = 250);
+        let claim1 = client.claim();
+        assert_eq!(claim1, 250_000);
+
+        // 50% vested → 500_000 total vested, 250_000 already claimed → 250_000 claimable
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        let claim2 = client.claim();
+        assert_eq!(claim2, 250_000);
+
+        // 75% vested → 750_000 total vested, 500_000 already claimed → 250_000 claimable
+        env.ledger().with_mut(|l| l.timestamp = 750);
+        let claim3 = client.claim();
+        assert_eq!(claim3, 250_000);
+
+        // 100% vested → 1_000_000 total vested, 750_000 already claimed → 250_000 claimable
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let claim4 = client.claim();
+        assert_eq!(claim4, 250_000);
+
+        // Sum of all claims must equal total_amount — no tokens lost or double-counted
+        assert_eq!(claim1 + claim2 + claim3 + claim4, TOTAL);
+
+        // get_status().claimed must reflect the full amount
+        let status = client.get_status();
+        assert_eq!(status.claimed, TOTAL);
+        assert!(status.fully_vested);
+
+        // No tokens remain — next claim must fail
+        assert_eq!(client.try_claim(), Err(Ok(VestingError::NothingToClaim)));
     }
 
 }

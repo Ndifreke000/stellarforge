@@ -278,6 +278,28 @@ impl ForgeOracle {
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
+
+    /// Return the current staleness threshold in seconds.
+    ///
+    /// Read-only; does not modify state. Returns the maximum age of price data
+    /// before [`get_price`](Self::get_price) considers it stale and reverts.
+    ///
+    /// # Returns
+    /// `u64` — the staleness threshold in seconds set at initialization or via
+    /// [`set_staleness_threshold`](Self::set_staleness_threshold).
+    /// Returns `0` if the contract has not been initialized.
+    ///
+    /// # Example
+    /// ```text
+    /// let threshold = client.get_staleness_threshold();
+    /// println!("Prices expire after {} seconds", threshold);
+    /// ```
+    pub fn get_staleness_threshold(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StalenessThreshold)
+            .unwrap_or(0)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -857,5 +879,21 @@ mod tests {
 
         let usdt_data = client.get_price(&xlm, &usdt);
         assert_eq!(usdt_data.price, xlm_usdt_price);
+    }
+
+    #[test]
+    fn test_get_staleness_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, client) = setup(&env);
+
+        // setup initializes with 3600
+        assert_eq!(client.get_staleness_threshold(), 3600);
+
+        // reflects updates via set_staleness_threshold
+        client.set_staleness_threshold(&7200);
+        assert_eq!(client.get_staleness_threshold(), 7200);
+
+        let _ = admin; // suppress unused warning
     }
 }

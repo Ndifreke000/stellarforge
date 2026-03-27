@@ -458,6 +458,27 @@ impl MultisigContract {
             .unwrap_or(0)
     }
 
+    /// Return the configured timelock delay in seconds.
+    ///
+    /// Read-only; returns `0` if the contract has not been initialized.
+    /// This is the number of seconds that must elapse after a proposal reaches
+    /// the approval threshold before it can be executed.
+    ///
+    /// # Returns
+    /// `u64` — the timelock delay in seconds set at initialization.
+    ///
+    /// # Example
+    /// ```text
+    /// let delay = client.get_timelock_delay();
+    /// println!("Timelock: {} seconds", delay);
+    /// ```
+    pub fn get_timelock_delay(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TimelockDelay)
+            .unwrap_or(0)
+    }
+
     /// Check if an address is one of the multisig owners.
     ///
     /// Read-only; returns `false` if the contract has not been initialized.
@@ -549,6 +570,15 @@ mod tests {
         let o1 = Address::generate(&env);
         let result = client.try_initialize(&vec![&env, o1], &5, &0);
         assert_eq!(result, Err(Ok(MultisigError::InvalidThreshold)));
+    }
+
+    #[test]
+    fn test_get_timelock_delay() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _, _) = setup_2of3(&env);
+        // setup_2of3 initializes with timelock_delay = 3600
+        assert_eq!(client.get_timelock_delay(), 3600);
     }
 
     #[test]

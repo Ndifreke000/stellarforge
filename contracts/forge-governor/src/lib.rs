@@ -50,6 +50,18 @@ pub enum ProposalState {
     Cancelled,
 }
 
+/// Vote tally for a proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoteTally {
+    /// Total votes cast in favor.
+    pub yes_votes: i128,
+    /// Total votes cast against.
+    pub no_votes: i128,
+    /// Sum of yes and no votes.
+    pub total_votes: i128,
+}
+
 /// A governance proposal.
 #[contracttype]
 #[derive(Clone)]
@@ -518,6 +530,67 @@ impl GovernorContract {
         env.storage()
             .persistent()
             .has(&DataKey::Vote(proposal_id, voter))
+    }
+
+    /// Return the current state of a proposal.
+    ///
+    /// Read-only; does not modify state. Lighter alternative to
+    /// [`get_proposal`](Self::get_proposal) when only the state is needed.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — ID of the proposal to query.
+    ///
+    /// # Returns
+    /// `Ok(`[`ProposalState`]`)` — the proposal's current state.
+    ///
+    /// # Errors
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    ///
+    /// # Example
+    /// ```text
+    /// let state = client.get_proposal_state(&proposal_id)?;
+    /// assert_eq!(state, ProposalState::Active);
+    /// ```
+    pub fn get_proposal_state(env: Env, proposal_id: u64) -> Result<ProposalState, GovernorError> {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernorError::ProposalNotFound)?;
+        Ok(proposal.state)
+    }
+
+    /// Return the current vote tally for a proposal.
+    ///
+    /// Read-only; does not modify state. Returns a breakdown of yes, no, and
+    /// total votes cast so far, regardless of the proposal's current state.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — ID of the proposal to query.
+    ///
+    /// # Returns
+    /// `Ok(`[`VoteTally`]`)` with the current vote counts.
+    ///
+    /// # Errors
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    ///
+    /// # Example
+    /// ```text
+    /// let tally = client.get_vote_tally(&proposal_id)?;
+    /// println!("yes: {}, no: {}, total: {}", tally.yes_votes, tally.no_votes, tally.total_votes);
+    /// ```
+    pub fn get_vote_tally(env: Env, proposal_id: u64) -> Result<VoteTally, GovernorError> {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernorError::ProposalNotFound)?;
+
+        Ok(VoteTally {
+            yes_votes: proposal.votes_for,
+            no_votes: proposal.votes_against,
+            total_votes: proposal.votes_for + proposal.votes_against,
+        })
     }
 
     /// Return the IDs of all proposals that are currently in the active voting period.
@@ -1295,5 +1368,133 @@ mod tests {
                 "pending[{i}] mismatch"
             );
         }
+    }
+
+    #[test]
+    fn test_get_proposal_state_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+
+        let result = client.try_get_proposal_state(&99);
+        assert_eq!(result, Err(Ok(GovernorError::ProposalNotFound)));
+    }
+
+    #[test]
+    fn test_get_proposal_state_active() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "State Test"),
+            &String::from_str(&env, "desc"),
+        );
+
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Active);
+    }
+
+    #[test]
+    fn test_get_proposal_state_passed_and_executed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "State Test"),
+            &String::from_str(&env, "desc"),
+        );
+        client.vote(&voter, &pid, &true, &200);
+
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        client.finalize(&pid);
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Passed);
+
+        env.ledger().with_mut(|l| l.timestamp = 5000 + 86400 + 1);
+        let executor = Address::generate(&env);
+        client.execute(&executor, &pid);
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Executed);
+    }
+
+    #[test]
+    fn test_get_proposal_state_failed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "State Test"),
+            &String::from_str(&env, "desc"),
+        );
+        // No votes — quorum not reached
+
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        client.finalize(&pid);
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Failed);
+    }
+
+    #[test]
+    fn test_get_vote_tally_no_votes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Tally Test"),
+            &String::from_str(&env, "desc"),
+        );
+
+        let tally = client.get_vote_tally(&pid);
+        assert_eq!(tally.yes_votes, 0);
+        assert_eq!(tally.no_votes, 0);
+        assert_eq!(tally.total_votes, 0);
+    }
+
+    #[test]
+    fn test_get_vote_tally_mixed_votes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Tally Test"),
+            &String::from_str(&env, "desc"),
+        );
+
+        let voter_a = Address::generate(&env);
+        let voter_b = Address::generate(&env);
+        client.vote(&voter_a, &pid, &true, &300);
+        client.vote(&voter_b, &pid, &false, &100);
+
+        let tally = client.get_vote_tally(&pid);
+        assert_eq!(tally.yes_votes, 300);
+        assert_eq!(tally.no_votes, 100);
+        assert_eq!(tally.total_votes, 400);
+    }
+
+    #[test]
+    fn test_get_vote_tally_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+
+        let result = client.try_get_vote_tally(&99);
+        assert_eq!(result, Err(Ok(GovernorError::ProposalNotFound)));
     }
 }

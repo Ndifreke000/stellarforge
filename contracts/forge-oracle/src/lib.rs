@@ -270,13 +270,17 @@ impl ForgeOracle {
     ///
     /// - `env`: The Soroban environment.
     ///
-    /// Returns an `Option<Address>` containing the admin address if initialized, or `None` otherwise.
+    /// Returns a `Result<Address, OracleError>` containing the admin address if initialized,
+    /// or `Err(OracleError::NotInitialized)` if the contract has not been initialized.
     ///
     /// ```
-    /// let admin = client.get_admin();
+    /// let admin = client.get_admin()?;
     /// ```
-    pub fn get_admin(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::Admin)
+    pub fn get_admin(env: Env) -> Result<Address, OracleError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(OracleError::NotInitialized)
     }
 
     /// Return the current staleness threshold in seconds.
@@ -285,20 +289,20 @@ impl ForgeOracle {
     /// before [`get_price`](Self::get_price) considers it stale and reverts.
     ///
     /// # Returns
-    /// `u64` — the staleness threshold in seconds set at initialization or via
-    /// [`set_staleness_threshold`](Self::set_staleness_threshold).
-    /// Returns `0` if the contract has not been initialized.
+    /// `Result<u64, OracleError>` — the staleness threshold in seconds set at initialization
+    /// or via [`set_staleness_threshold`](Self::set_staleness_threshold).
+    /// Returns `Err(OracleError::NotInitialized)` if the contract has not been initialized.
     ///
     /// # Example
     /// ```text
-    /// let threshold = client.get_staleness_threshold();
+    /// let threshold = client.get_staleness_threshold()?;
     /// println!("Prices expire after {} seconds", threshold);
     /// ```
-    pub fn get_staleness_threshold(env: Env) -> u64 {
+    pub fn get_staleness_threshold(env: Env) -> Result<u64, OracleError> {
         env.storage()
             .instance()
             .get(&DataKey::StalenessThreshold)
-            .unwrap_or(0)
+            .ok_or(OracleError::NotInitialized)
     }
 }
 
@@ -888,12 +892,35 @@ mod tests {
         let (admin, client) = setup(&env);
 
         // setup initializes with 3600
-        assert_eq!(client.get_staleness_threshold(), 3600);
+        assert_eq!(client.get_staleness_threshold().unwrap(), 3600);
 
         // reflects updates via set_staleness_threshold
         client.set_staleness_threshold(&7200);
-        assert_eq!(client.get_staleness_threshold(), 7200);
+        assert_eq!(client.get_staleness_threshold().unwrap(), 7200);
 
         let _ = admin; // suppress unused warning
+    }
+}
+
+    /// Test that get_admin() returns NotInitialized error when contract is uninitialized
+    #[test]
+    fn test_get_admin_uninitialized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ForgeOracle);
+        let client = ForgeOracleClient::new(&env, &contract_id);
+
+        let result = client.try_get_admin();
+        assert_eq!(result, Err(Ok(OracleError::NotInitialized)));
+    }
+
+    /// Test that get_staleness_threshold() returns NotInitialized error when contract is uninitialized
+    #[test]
+    fn test_get_staleness_threshold_uninitialized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ForgeOracle);
+        let client = ForgeOracleClient::new(&env, &contract_id);
+
+        let result = client.try_get_staleness_threshold();
+        assert_eq!(result, Err(Ok(OracleError::NotInitialized)));
     }
 }

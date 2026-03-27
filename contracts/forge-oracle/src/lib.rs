@@ -404,6 +404,42 @@ mod tests {
     }
 
     #[test]
+    fn test_get_price_unsubmitted_pair_reverts_with_price_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, client) = setup(&env);
+
+        // Use a pair that has never had a price submitted
+        let base = Symbol::new(&env, "ETH");
+        let quote = Symbol::new(&env, "USDC");
+
+        let result = client.try_get_price(&base, &quote);
+        assert_eq!(
+            result,
+            Err(Ok(OracleError::PriceNotFound)),
+            "get_price() on an unsubmitted pair must revert with PriceNotFound"
+        );
+    }
+
+    #[test]
+    fn test_get_price_unsafe_unsubmitted_pair_reverts_with_price_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, client) = setup(&env);
+
+        // Use a pair that has never had a price submitted
+        let base = Symbol::new(&env, "ETH");
+        let quote = Symbol::new(&env, "USDC");
+
+        let result = client.try_get_price_unsafe(&base, &quote);
+        assert_eq!(
+            result,
+            Err(Ok(OracleError::PriceNotFound)),
+            "get_price_unsafe() on an unsubmitted pair must revert with PriceNotFound"
+        );
+    }
+
+    #[test]
     fn test_invalid_price_rejected() {
         let env = Env::default();
         env.mock_all_auths();

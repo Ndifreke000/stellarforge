@@ -10,7 +10,7 @@
 //! - Configurable staleness threshold — reads revert if price is too old
 //! - Event emission on every price update
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, vec, Address, Env, Symbol, Vec};
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ pub enum DataKey {
     StalenessThreshold,
     Price(PricePair),
     UpdatedAt(PricePair),
+    Pairs,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -38,6 +39,16 @@ pub struct PriceData {
     /// Price scaled to 7 decimal places (e.g. 1_0000000 = 1.0)
     pub price: i128,
     /// Ledger timestamp of last update
+    pub updated_at: u64,
+}
+
+/// A single entry returned by [`get_all_prices`](ForgeOracle::get_all_prices).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceEntry {
+    pub base: Symbol,
+    pub quote: Symbol,
+    pub price: i128,
     pub updated_at: u64,
 }
 
@@ -124,6 +135,18 @@ impl ForgeOracle {
         };
         let now = env.ledger().timestamp();
 
+        // Track this pair in the known-pairs list (deduplicated by key)
+        let pair_key = PricePair { base: base.clone(), quote: quote.clone() };
+        if !env.storage().persistent().has(&DataKey::Price(pair_key)) {
+            let mut pairs: Vec<PricePair> = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pairs)
+                .unwrap_or_else(|| vec![&env]);
+            pairs.push_back(PricePair { base: base.clone(), quote: quote.clone() });
+            env.storage().instance().set(&DataKey::Pairs, &pairs);
+        }
+
         env.storage()
             .persistent()
             .set(&DataKey::Price(pair.clone()), &price);
@@ -134,7 +157,7 @@ impl ForgeOracle {
         // Extend TTL for StalenessThreshold to prevent silent fallback
         env.storage()
             .instance()
-            .extend_ttl(&DataKey::StalenessThreshold, 17280, 34560);
+            .extend_ttl(17280, 34560);
 
         env.events().publish(
             (Symbol::new(&env, "price_updated"),),
@@ -243,7 +266,7 @@ impl ForgeOracle {
         // Extend TTL to prevent silent fallback
         env.storage()
             .instance()
-            .extend_ttl(&DataKey::StalenessThreshold, 17280, 34560);
+            .extend_ttl(17280, 34560);
         Ok(())
     }
 
@@ -273,6 +296,49 @@ impl ForgeOracle {
         );
 
         Ok(())
+    }
+
+    /// Returns all currently stored price pairs and their latest prices.
+    ///
+    /// Iterates over every pair that has ever been submitted via [`submit_price`](Self::submit_price)
+    /// and returns a [`Vec<PriceEntry>`] containing the base, quote, price, and timestamp for each.
+    /// Prices are returned regardless of staleness — use [`get_price`](Self::get_price) for
+    /// staleness-checked reads.
+    ///
+    /// # Returns
+    /// `Ok(Vec<PriceEntry>)` — one entry per unique pair, in submission order.
+    ///
+    /// # Errors
+    /// - [`OracleError::NotInitialized`] — `initialize` has not been called.
+    pub fn get_all_prices(env: Env) -> Result<Vec<PriceEntry>, OracleError> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(OracleError::NotInitialized);
+        }
+        let pairs: Vec<PricePair> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pairs)
+            .unwrap_or_else(|| vec![&env]);
+        let mut result: Vec<PriceEntry> = vec![&env];
+        for pair in pairs.iter() {
+            let price: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Price(pair.clone()))
+                .unwrap_or(0);
+            let updated_at: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::UpdatedAt(pair.clone()))
+                .unwrap_or(0);
+            result.push_back(PriceEntry {
+                base: pair.base.clone(),
+                quote: pair.quote.clone(),
+                price,
+                updated_at,
+            });
+        }
+        Ok(result)
     }
 
     /// Retrieves the current admin address.
@@ -512,7 +578,7 @@ mod tests {
         let (_, client) = setup(&env);
         let new_admin = Address::generate(&env);
         client.transfer_admin(&new_admin);
-        assert_eq!(client.get_admin().unwrap(), new_admin);
+        assert_eq!(client.get_admin(), new_admin);
     }
 
     /// Test that transfer_admin() allows new admin to submit prices and old admin cannot.
@@ -530,7 +596,7 @@ mod tests {
 
         // Transfer admin from admin_a to admin_b
         client.transfer_admin(&admin_b);
-        assert_eq!(client.get_admin().unwrap(), admin_b);
+        assert_eq!(client.get_admin(), admin_b);
 
         // Mock auth as admin_b and call submit_price() — assert it succeeds
         env.mock_auths(&[soroban_sdk::testutils::MockAuth {
@@ -950,11 +1016,11 @@ mod tests {
         let (admin, client) = setup(&env);
 
         // setup initializes with 3600
-        assert_eq!(client.get_staleness_threshold().unwrap(), 3600);
+        assert_eq!(client.get_staleness_threshold(), 3600);
 
         // reflects updates via set_staleness_threshold
         client.set_staleness_threshold(&7200);
-        assert_eq!(client.get_staleness_threshold().unwrap(), 7200);
+        assert_eq!(client.get_staleness_threshold(), 7200);
 
         let _ = admin; // suppress unused warning
     }
@@ -992,7 +1058,6 @@ mod tests {
         let data = client.get_price(&base, &quote);
         assert_eq!(data.price, 10_000_000);
     }
-}
 
     /// Test that get_admin() returns NotInitialized error when contract is uninitialized
     #[test]
@@ -1038,5 +1103,67 @@ mod tests {
         let result = client.try_get_price(&base, &quote);
         // Should succeed normally since threshold was just set
         assert!(result.is_ok());
+    }
+
+    // ── get_all_prices tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_all_prices_returns_all_submitted_pairs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        client.submit_price(&Symbol::new(&env, "XLM"), &Symbol::new(&env, "USDC"), &10_000_000);
+        client.submit_price(&Symbol::new(&env, "BTC"), &Symbol::new(&env, "USDC"), &70_000_000_000);
+        client.submit_price(&Symbol::new(&env, "ETH"), &Symbol::new(&env, "USDC"), &3_500_000_000);
+
+        let entries = client.get_all_prices();
+        assert_eq!(entries.len(), 3);
+
+        assert_eq!(entries.get(0).unwrap().base, Symbol::new(&env, "XLM"));
+        assert_eq!(entries.get(0).unwrap().price, 10_000_000);
+        assert_eq!(entries.get(1).unwrap().base, Symbol::new(&env, "BTC"));
+        assert_eq!(entries.get(1).unwrap().price, 70_000_000_000);
+        assert_eq!(entries.get(2).unwrap().base, Symbol::new(&env, "ETH"));
+        assert_eq!(entries.get(2).unwrap().price, 3_500_000_000);
+    }
+
+    #[test]
+    fn test_get_all_prices_deduplicates_repeated_pair() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let base = Symbol::new(&env, "XLM");
+        let quote = Symbol::new(&env, "USDC");
+
+        client.submit_price(&base, &quote, &10_000_000);
+        env.ledger().with_mut(|l| l.timestamp = 2000);
+        client.submit_price(&base, &quote, &12_000_000);
+
+        let entries = client.get_all_prices();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.get(0).unwrap().price, 12_000_000);
+        assert_eq!(entries.get(0).unwrap().updated_at, 2000);
+    }
+
+    #[test]
+    fn test_get_all_prices_empty_when_none_submitted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, client) = setup(&env);
+
+        let entries = client.get_all_prices();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn test_get_all_prices_not_initialized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, ForgeOracle);
+        let client = ForgeOracleClient::new(&env, &contract_id);
+        assert_eq!(client.try_get_all_prices(), Err(Ok(OracleError::NotInitialized)));
     }
 }

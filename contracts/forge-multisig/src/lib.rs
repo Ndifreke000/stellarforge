@@ -189,9 +189,9 @@ impl MultisigContract {
         };
 
         let proposal = Proposal {
-            proposer,
-            to,
-            token,
+            proposer: proposer.clone(),
+            to: to.clone(),
+            token: token.clone(),
             amount,
             approvals,
             rejections: Vec::new(&env),
@@ -1272,7 +1272,6 @@ mod tests {
             FUNDED_AMOUNT
         );
     }
-}
 
     /// Test that propose() emits a proposal_created event with correct payload
     #[test]

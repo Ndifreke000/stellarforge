@@ -252,6 +252,70 @@ exit 0
 
 ---
 
+## Benchmarking
+
+StellarForge uses Soroban's built-in **budget tracking** to measure contract execution costs. Unlike wall-clock benchmarks, the Soroban budget reports deterministic, environment-independent metrics:
+
+- **CPU instructions** — computational work performed by the contract host
+- **Memory bytes** — heap allocations made during execution
+
+These numbers are stable across machines and reflect the actual on-chain resource consumption that determines transaction fees.
+
+### Running Benchmarks
+
+```bash
+make bench
+# or manually:
+cargo run -p forge-benches
+```
+
+### Example Output
+
+```
+StellarForge Contract Benchmarks
+=================================
+Metric: Soroban budget (CPU instructions + memory bytes)
+Note:   Each measurement is reset before the call under test.
+
+[forge-vesting]
+  initialize()                        cpu=       52587 instructions   mem=      8278 bytes
+  claim() at 50%                      cpu=      225128 instructions   mem=     34124 bytes
+  claim() at 100%                     cpu=      229029 instructions   mem=     34143 bytes
+
+[forge-oracle]
+  submit_price()                      cpu=      167582 instructions   mem=     53256 bytes
+  get_price()                         cpu=       66557 instructions   mem=     10774 bytes
+  ...
+```
+
+### Interpreting Results
+
+- **CPU instructions** — higher values mean more compute cost and higher fees. Watch for unexpected spikes after refactors.
+- **Memory bytes** — heap usage per call. Large allocations (e.g. iterating over many stored entries) show up here.
+- Each measurement is isolated: `env.budget().reset_default()` is called immediately before the function under test, so setup costs don't pollute results.
+
+### Adding a New Benchmark
+
+Open `benches/src/main.rs` and add a `bench_<contract>()` function following the existing pattern:
+
+```rust
+fn bench_mycontract(env: &Env) {
+    println!("\n[forge-mycontract]");
+    // ... setup ...
+    env.budget().reset_default();
+    client.my_function(&arg);
+    print_budget("my_function()", env);
+}
+```
+
+Then call it from `main()`. No external dependencies are needed — the benchmark binary uses the same `soroban-sdk` testutils already used by the test suite.
+
+### Tracking Regressions
+
+Run `make bench` before and after a change and compare the numbers. A significant increase in CPU instructions for a core function (e.g. >10%) warrants investigation before merging.
+
+---
+
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch off `main`.

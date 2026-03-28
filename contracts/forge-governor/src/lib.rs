@@ -104,6 +104,7 @@ pub enum GovernorError {
     AlreadyCancelled = 11,
     InvalidConfig = 12,
     InvalidWeight = 13,
+    Unauthorized = 14,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ impl GovernorContract {
             .unwrap_or(0u64);
 
         let proposal = Proposal {
-            proposer,
+            proposer: proposer.clone(),
             title,
             description,
             vote_start: now,
@@ -384,7 +385,7 @@ impl GovernorContract {
 
         env.events().publish(
             (Symbol::new(&env, "proposal_finalized"),),
-            (proposal_id, &state, proposal.votes_for, proposal.votes_against),
+            (proposal_id, proposal.votes_for, proposal.votes_against),
         );
 
         Ok(state)
@@ -1658,7 +1659,6 @@ mod tests {
         let result = client.try_get_vote_tally(&99);
         assert_eq!(result, Err(Ok(GovernorError::ProposalNotFound)));
     }
-}
 
     /// Test that propose() emits a proposal_created event with correct payload
     #[test]

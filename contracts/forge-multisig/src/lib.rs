@@ -21,6 +21,9 @@ pub enum DataKey {
     TimelockDelay,
     Proposal(u64),
     NextProposalId,
+    /// Boolean flag per address — `true` means the address is an owner.
+    /// Enables O(1) ownership checks without scanning the full owner Vec.
+    IsOwner(Address),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -132,6 +135,14 @@ impl MultisigContract {
         env.storage()
             .instance()
             .set(&DataKey::TimelockDelay, &timelock_delay);
+
+        // Populate O(1) ownership lookup map.
+        for owner in unique_owners.iter() {
+            env.storage()
+                .instance()
+                .set(&DataKey::IsOwner(owner), &true);
+        }
+
         Ok(())
     }
 
@@ -527,12 +538,10 @@ impl MultisigContract {
     /// }
     /// ```
     pub fn is_owner(env: Env, address: Address) -> bool {
-        let owners: Vec<Address> = env
-            .storage()
+        env.storage()
             .instance()
-            .get(&DataKey::Owners)
-            .unwrap_or(Vec::new(&env));
-        owners.contains(&address)
+            .get::<DataKey, bool>(&DataKey::IsOwner(address))
+            .unwrap_or(false)
     }
 
     /// Return the number of owner approvals for a proposal.
@@ -556,12 +565,16 @@ impl MultisigContract {
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn require_owner(env: &Env, address: &Address) -> Result<(), MultisigError> {
-        let owners: Vec<Address> = env
+        // Guard against calls before initialize() — IsOwner keys only exist post-init.
+        if !env.storage().instance().has(&DataKey::Owners) {
+            return Err(MultisigError::NotInitialized);
+        }
+        let is_owner: bool = env
             .storage()
             .instance()
-            .get(&DataKey::Owners)
-            .ok_or(MultisigError::NotInitialized)?;
-        if owners.contains(address) {
+            .get(&DataKey::IsOwner(address.clone()))
+            .unwrap_or(false);
+        if is_owner {
             Ok(())
         } else {
             Err(MultisigError::Unauthorized)
@@ -1434,5 +1447,51 @@ mod tests {
                     .unwrap_or(false)
         });
         assert!(found, "Expected proposal_executed event not found");
+    }
+
+    /// Test that ownership checks are correct with a large owner set (10 owners).
+    /// Verifies O(1) IsOwner map correctly identifies owners and non-owners.
+    #[test]
+    fn test_large_owner_set_ownership_checks() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+
+        // Generate 10 owners
+        let owners: std::vec::Vec<Address> = (0..10).map(|_| Address::generate(&env)).collect();
+        let sdk_owners = {
+            let mut v = soroban_sdk::Vec::new(&env);
+            for o in owners.iter() {
+                v.push_back(o.clone());
+            }
+            v
+        };
+
+        // 6-of-10 multisig
+        client.initialize(&sdk_owners, &6, &0);
+
+        // All 10 owners must be recognised
+        for owner in owners.iter() {
+            assert!(client.is_owner(owner), "Expected address to be an owner");
+        }
+
+        // A freshly generated address must NOT be an owner
+        let non_owner = Address::generate(&env);
+        assert!(!client.is_owner(&non_owner), "Expected address to not be an owner");
+
+        // get_owners() must still return all 10
+        assert_eq!(client.get_owners().len(), 10);
+
+        // A non-owner cannot propose (Unauthorized)
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+        let result = client.try_propose(&non_owner, &to, &token, &100);
+        assert_eq!(result, Err(Ok(MultisigError::Unauthorized)));
+
+        // An owner can propose successfully
+        let result = client.try_propose(&owners[0], &to, &token, &100);
+        assert!(result.is_ok());
     }
 }

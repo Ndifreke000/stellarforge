@@ -20,6 +20,7 @@ use soroban_sdk::{
 pub enum DataKey {
     Config,
     Claimed,
+    VestedAtCancel,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -291,23 +292,24 @@ impl ForgeVesting {
         let now = env.ledger().timestamp();
         let vested = Self::compute_vested(&config, now);
         let claimed = Self::get_claimed(&env);
-        let returnable = config.total_amount - vested.max(claimed);
-        let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
-        
+
         // Split tokens: vested-but-unclaimed goes to beneficiary, unvested goes to admin
         let to_beneficiary = vested - claimed;
         let to_admin = config.total_amount - vested;
 
         config.cancelled = true;
         env.storage().instance().set(&DataKey::Config, &config);
+        env.storage().instance().set(&DataKey::VestedAtCancel, &vested);
+        // Update claimed to vested so get_status().claimable reflects 0 after cancel payout
+        env.storage().instance().set(&DataKey::Claimed, &vested);
 
         let token_client = token::Client::new(&env, &config.token);
-        
+
         // Transfer vested-but-unclaimed tokens to beneficiary
         if to_beneficiary > 0 {
             token_client.transfer(&env.current_contract_address(), &config.beneficiary, &to_beneficiary);
         }
-        
+
         // Transfer unvested tokens to admin
         if to_admin > 0 {
             token_client.transfer(&env.current_contract_address(), &config.admin, &to_admin);
@@ -359,6 +361,7 @@ impl ForgeVesting {
 
         config.cancelled = true;
         env.storage().instance().set(&DataKey::Config, &config);
+        env.storage().instance().set(&DataKey::VestedAtCancel, &vested);
         env.storage()
             .instance()
             .set(&DataKey::Claimed, &(claimed + to_beneficiary));
@@ -518,7 +521,14 @@ impl ForgeVesting {
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(config.start_time);
         let cliff_reached = elapsed >= config.cliff_seconds;
-        let vested = Self::compute_vested(&config, now);
+        let vested = if config.cancelled {
+            env.storage()
+                .instance()
+                .get(&DataKey::VestedAtCancel)
+                .unwrap_or(0)
+        } else {
+            Self::compute_vested(&config, now)
+        };
         let claimed = Self::get_claimed(&env);
         let claimable = (vested - claimed).max(0);
         let fully_vested = vested >= config.total_amount;
@@ -1730,6 +1740,83 @@ mod tests {
         let tc = soroban_sdk::token::Client::new(&env, &token_id);
         assert_eq!(tc.balance(&beneficiary), 1_000_000);
         assert_eq!(tc.balance(&admin), 0);
+    }
+
+    #[test]
+    fn test_get_status_vested_reflects_cancel_time_not_zero() {
+        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        // 1_000_000 tokens, no cliff, 1000s duration
+        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &0, &1000);
+
+        // Advance to 40% vested
+        env.ledger().with_mut(|l| l.timestamp += 400);
+        client.cancel();
+
+        // Advance time further — vested should still reflect cancel-time amount
+        env.ledger().with_mut(|l| l.timestamp += 600);
+        let status = client.get_status();
+
+        assert_eq!(status.vested, 400_000, "vested should reflect amount at cancel time");
+        assert_eq!(status.claimable, 0, "claimable should be 0 after cancel pays out");
+    }
+
+    /// Verifies transfer_admin() emits an "admin_transferred" event with the correct
+    /// old and new admin addresses in the data payload.
+    #[test]
+    fn test_event_admin_transferred_emitted_with_correct_addresses() {
+        use soroban_sdk::{testutils::Events, Symbol, TryFromVal};
+
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&new_admin);
+
+        let events = env.events().all();
+        let (_, topics, data) = events
+            .iter()
+            .find(|(_, topics, _)| {
+                topics.len() == 1
+                    && Symbol::try_from_val(&env, &topics.get(0).unwrap())
+                        .map(|s| s == Symbol::new(&env, "admin_transferred"))
+                        .unwrap_or(false)
+            })
+            .expect("admin_transferred event not found");
+
+        let topic_sym = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        assert_eq!(topic_sym, Symbol::new(&env, "admin_transferred"));
+
+        let (got_old_admin, got_new_admin) =
+            <(Address, Address)>::try_from_val(&env, &data).unwrap();
+        assert_eq!(got_old_admin, admin);
+        assert_eq!(got_new_admin, new_admin);
+    }
+
+    /// Verifies that no "admin_transferred" event is emitted when transfer_admin() fails
+    /// (e.g. SameAdmin case).
+    #[test]
+    fn test_event_admin_transferred_not_emitted_on_failure() {
+        use soroban_sdk::{testutils::Events, Symbol, TryFromVal};
+
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        // Attempt to transfer to the same admin — should fail with SameAdmin
+        let result = client.try_transfer_admin(&admin);
+        assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
+
+        // No admin_transferred event should have been emitted
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, _)| {
+            topics.len() == 1
+                && Symbol::try_from_val(&env, &topics.get(0).unwrap())
+                    .map(|s| s == Symbol::new(&env, "admin_transferred"))
+                    .unwrap_or(false)
+        });
+        assert!(!found, "admin_transferred event should not be emitted on failure");
     }
 
 }
